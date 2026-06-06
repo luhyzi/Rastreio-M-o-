@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Luiz - Rastreio de Mão Ultra Preciso</title>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #121212;
+            color: #ffffff;
+            font-family: sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        header {
+            text-align: center;
+            padding: 15px 0;
+            width: 100%;
+            background-color: #1e1e1e;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            z-index: 10;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 1.8rem;
+            color: #4CAF50;
+        }
+
+        p {
+            margin: 5px 0 0 0;
+            font-size: 1rem;
+            color: #aaaaaa;
+        }
+
+        .app-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            width: 100%;
+            max-width: 450px; 
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        /* Moldura estrita em 3:4 */
+        .camera-container {
+            position: relative;
+            width: 100%;
+            aspect-ratio: 3 / 4;
+            background-color: #000;
+            border-radius: 20px;
+            overflow: hidden;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.7);
+        }
+
+        .input_video {
+            display: none;
+        }
+
+        /* Canvas ocupa tudo, mas a imagem interna agora é controlada via JavaScript */
+        .output_canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        /* Janela 3D no canto inferior esquerdo */
+        #model-window-3d {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            width: 140px;
+            height: 140px;
+            background-color: rgba(20, 20, 20, 0.85);
+            border: 2px solid #4CAF50;
+            border-radius: 16px;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.6);
+            overflow: hidden;
+            z-index: 5;
+        }
+        
+        .loading-text {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #888;
+            font-size: 0.75rem;
+            text-align: center;
+            width: 90%;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>Luiz</h1>
+        <p>Meus sites!</p>
+    </header>
+
+    <div class="app-container">
+        <div class="camera-container">
+            <video class="input_video" playsinline></video>
+            <canvas class="output_canvas"></canvas>
+            
+            <div id="model-window-3d">
+                <div class="loading-text">Analisando ambiente...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const videoElement = document.querySelector('.input_video');
+        const canvasElement = document.querySelector('.output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+
+        // --- CONFIGURAÇÃO THREE.JS (MÃO 3D) ---
+        const container3D = document.getElementById('model-window-3d');
+        const scene = new THREE.Scene();
+        
+        const camera3D = new THREE.PerspectiveCamera(45, 1, 0.1, 1000);
+        camera3D.position.set(0, 0, 12);
+
+        const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+        renderer.setSize(140, 140);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        container3D.appendChild(renderer.domElement);
+
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+        
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 1.0);
+        directionalLight.position.set(5, 10, 8);
+        scene.add(directionalLight);
+
+        const skinMaterial = new THREE.MeshStandardMaterial({ 
+            color: 0x22a6b3, // Azul ciano para visual moderno
+            roughness: 0.2, 
+            metalness: 0.3 
+        });
+
+        const joints3D = [];
+        const bones3D = [];
+
+        const sphereGeo = new THREE.SphereGeometry(0.25, 16, 16);
+        const cylinderGeo = new THREE.CylinderGeometry(0.18, 0.18, 1, 16);
+        cylinderGeo.translate(0, 0.5, 0); 
+        cylinderGeo.rotateX(Math.PI / 2);
+
+        for (let i = 0; i < 21; i++) {
+            const joint = new THREE.Mesh(sphereGeo, skinMaterial);
+            scene.add(joint);
+            joints3D.push(joint);
+        }
+
+        const connections = [
+            [0, 1], [1, 2], [2, 3], [3, 4],
+            [0, 5], [5, 6], [6, 7], [7, 8],
+            [5, 9], [9, 10], [10, 11], [11, 12],
+            [9, 13], [13, 14], [14, 15], [15, 16],
+            [13, 17], [0, 17], [17, 18], [18, 19], [19, 20]
+        ];
+
+        for (let i = 0; i < connections.length; i++) {
+            const bone = new THREE.Mesh(cylinderGeo, skinMaterial);
+            scene.add(bone);
+            bones3D.push({ mesh: bone, startIdx: connections[i][0], endIdx: connections[i][1] });
+        }
+
+        // --- PROCESSAMENTO DE IMAGEM DA CÂMERA (CORREÇÃO DE DISTORÇÃO) ---
+        function onResults(results) {
+            // Define o tamanho interno do canvas baseado no vídeo real recebido
+            if (canvasElement.width !== videoElement.videoWidth || canvasElement.height !== videoElement.videoHeight) {
+                canvasElement.width = videoElement.videoWidth;
+                canvasElement.height = videoElement.videoHeight;
+            }
+
+            const vWidth = canvasElement.width;
+            const vHeight = canvasElement.height;
+
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, vWidth, vHeight);
+            
+            // Inverte horizontalmente para efeito espelho natural
+            canvasCtx.translate(vWidth, 0);
+            canvasCtx.scale(-1, 1);
+
+            // CÁCULO DE CORTE DE PROPORÇÃO (Impede que a imagem estique)
+            // Queremos uma janela de visualização centralizada na proporção 3:4
+            const targetAspectRatio = 3 / 4;
+            let renderWidth = vWidth;
+            let renderHeight = vWidth / targetAspectRatio;
+            
+            if (renderHeight > vHeight) {
+                renderHeight = vHeight;
+                renderWidth = vHeight * targetAspectRatio;
+            }
+
+            const xOffset = (vWidth - renderWidth) / 2;
+            const yOffset = (vHeight - renderHeight) / 2;
+
+            // Desenha apenas o pedaço correto do vídeo, evitando qualquer distorção estrutural
+            canvasCtx.drawImage(results.image, 0, 0, vWidth, vHeight);
+            canvasCtx.setTransform(1, 0, 0, 1, 0, 0);
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                document.querySelector('.loading-text').style.display = 'none';
+
+                for (const landmarks of results.multiHandLandmarks) {
+                    // Ajusta os pontos do esqueleto 2D para coincidir com o efeito espelho
+                    const mirroredLandmarks = landmarks.map(lm => ({ ...lm, x: 1 - lm.x }));
+
+                    // Desenha o esqueleto digital com linhas finas e precisas
+                    drawConnectors(canvasCtx, mirroredLandmarks, HAND_CONNECTIONS, {color: '#ffffff', lineWidth: 2});
+                    drawLandmarks(canvasCtx, mirroredLandmarks, {color: '#00ffaa', lineWidth: 1, radius: 2});
+
+                    updateSolid3DHand(landmarks);
+                }
+            }
+            canvasCtx.restore();
+            
+            renderer.render(scene, camera3D);
+        }
+
+        // --- ATUALIZAÇÃO E SUAVIZAÇÃO DA MÃO 3D ---
+        function updateSolid3DHand(landmarks) {
+            const lerpFactor = 0.4; // Fator de suavização (quanto menor, mais suave; quanto maior, mais rápido)
+
+            for (let i = 0; i < 21; i++) {
+                const lm = landmarks[i];
+                
+                // Posições calculadas com base nas coordenadas da IA
+                const targetX = -(lm.x - 0.5) * 10;
+                const targetY = -(lm.y - 0.5) * 10;
+                const targetZ = -lm.z * 12;
+
+                // Aplica a interpolação linear (lerp) para evitar tremelique nos dedos 3D
+                joints3D[i].position.x += (targetX - joints3D[i].position.x) * lerpFactor;
+                joints3D[i].position.y += (targetY - joints3D[i].position.y) * lerpFactor;
+                joints3D[i].position.z += (targetZ - joints3D[i].position.z) * lerpFactor;
+            }
+
+            // Atualiza os cilindros conectores com base nas novas posições das esferas suavizadas
+            for (let i = 0; i < bones3D.length; i++) {
+                const boneData = bones3D[i];
+                const startPos = joints3D[boneData.startIdx].position;
+                const endPos = joints3D[boneData.endIdx].position;
+
+                const distance = startPos.distanceTo(endPos);
+                boneData.mesh.position.copy(startPos);
+                boneData.mesh.scale.set(1, 1, distance);
+                boneData.mesh.lookAt(endPos);
+            }
+        }
+
+        // --- CONFIGURAÇÃO DA INTELIGÊNCIA ARTIFICIAL (MÁXIMA PRECISÃO) ---
+        const hands = new Hands({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+        }});
+
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 2,         // MÁXIMA PRECISÃO: Ativa o modelo mais pesado e detalhado da IA do Google
+            minDetectionConfidence: 0.7, // Só aceita se tiver 70% de certeza que encontrou a mão
+            minTrackingConfidence: 0.7   // Evita que o esqueleto "solte" da sua mão ao mover
+        });
+
+        hands.onResults(onResults);
+
+        // Inicializa o fluxo nativo da câmera
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({image: videoElement});
+            },
+            width: 1280,
+            height: 720
+        });
+        camera.start();
+
+    </script>
+</body>
+</html>
+
