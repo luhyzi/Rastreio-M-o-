@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Luiz - Rastreio de Mão Ultra Preciso</title>
+    <title>Luiz - Rastreio de Mão Ultra Preciso (Corrigido)</title>
 
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
@@ -52,12 +52,12 @@
             flex-direction: column;
             align-items: center;
             width: 100%;
-            max-width: 450px; 
+            max-width: 450px; /* Proporção ideal de smartphone vertical */
             padding: 20px;
             box-sizing: border-box;
         }
 
-        /* Moldura estrita em 3:4 */
+        /* Moldura estrita em 3:4 vertical */
         .camera-container {
             position: relative;
             width: 100%;
@@ -69,14 +69,15 @@
         }
 
         .input_video {
-            display: none;
+            display: none; /* O vídeo original fica oculto */
         }
 
-        /* Canvas ocupa tudo, mas a imagem interna agora é controlada via JavaScript */
+        /* O Canvas agora exibe a imagem já recortada e processada */
         .output_canvas {
             width: 100%;
             height: 100%;
             display: block;
+            object-fit: contain; /* Garante que o canvas preencha o espaço sem distorcer visualmente */
         }
 
         /* Janela 3D no canto inferior esquerdo */
@@ -185,51 +186,95 @@
 
         // --- PROCESSAMENTO DE IMAGEM DA CÂMERA (CORREÇÃO DE DISTORÇÃO) ---
         function onResults(results) {
-            // Define o tamanho interno do canvas baseado no vídeo real recebido
-            if (canvasElement.width !== videoElement.videoWidth || canvasElement.height !== videoElement.videoHeight) {
-                canvasElement.width = videoElement.videoWidth;
-                canvasElement.height = videoElement.videoHeight;
+            // Se o vídeo não carregou ainda, sai da função
+            if (!videoElement.videoWidth) return;
+
+            // Define a resolução interna do canvas baseada na altura do vídeo
+            // Queremos um canvas 3:4 (vertical). Se a altura do vídeo é 'h', a largura deve ser h * (3/4)
+            const targetHeight = videoElement.videoHeight;
+            const targetWidth = Math.round(targetHeight * (3 / 4));
+
+            // Atualiza o tamanho do canvas apenas se necessário
+            if (canvasElement.width !== targetWidth || canvasElement.height !== targetHeight) {
+                canvasElement.width = targetWidth;
+                canvasElement.height = targetHeight;
             }
 
-            const vWidth = canvasElement.width;
-            const vHeight = canvasElement.height;
+            const canvasW = canvasElement.width;
+            const canvasH = canvasElement.height;
+            const videoW = videoElement.videoWidth;
+            const videoH = videoElement.videoHeight;
 
             canvasCtx.save();
-            canvasCtx.clearRect(0, 0, vWidth, vHeight);
+            canvasCtx.clearRect(0, 0, canvasW, canvasH);
             
-            // Inverte horizontalmente para efeito espelho natural
-            canvasCtx.translate(vWidth, 0);
+            // Inverte horizontalmente para efeito espelho natural no canvas inteiro
+            canvasCtx.translate(canvasW, 0);
             canvasCtx.scale(-1, 1);
 
             // CÁCULO DE CORTE DE PROPORÇÃO (Impede que a imagem estique)
-            // Queremos uma janela de visualização centralizada na proporção 3:4
+            // Calculamos as coordenadas de corte (sx, sy, sw, sh) no vídeo original
+            // para centralizar a janela 3:4
+            let sw, sh, sx, sy;
+            const videoAspectRatio = videoW / videoH;
             const targetAspectRatio = 3 / 4;
-            let renderWidth = vWidth;
-            let renderHeight = vWidth / targetAspectRatio;
-            
-            if (renderHeight > vHeight) {
-                renderHeight = vHeight;
-                renderWidth = vHeight * targetAspectRatio;
+
+            if (videoAspectRatio > targetAspectRatio) {
+                // Vídeo é mais largo que 3:4 (ex: 16:9). Cortamos as laterais.
+                sh = videoH;
+                sw = Math.round(videoH * targetAspectRatio);
+                sx = Math.round((videoW - sw) / 2);
+                sy = 0;
+            } else {
+                // Vídeo é mais alto que 3:4 (raro em webcams). Cortamos topo/fundo.
+                sw = videoW;
+                sh = Math.round(videoW / targetAspectRatio);
+                sx = 0;
+                sy = Math.round((videoH - sh) / 2);
             }
 
-            const xOffset = (vWidth - renderWidth) / 2;
-            const yOffset = (vHeight - renderHeight) / 2;
-
-            // Desenha apenas o pedaço correto do vídeo, evitando qualquer distorção estrutural
-            canvasCtx.drawImage(results.image, 0, 0, vWidth, vHeight);
+            // Desenha apenas o pedaço centralizado e correto do vídeo no canvas
+            canvasCtx.drawImage(results.image, sx, sy, sw, sh, 0, 0, canvasW, canvasH);
+            
+            // Reseta as transformações (espelho) para desenhar os landmarks corretamente
             canvasCtx.setTransform(1, 0, 0, 1, 0, 0);
 
             if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
                 document.querySelector('.loading-text').style.display = 'none';
 
                 for (const landmarks of results.multiHandLandmarks) {
-                    // Ajusta os pontos do esqueleto 2D para coincidir com o efeito espelho
-                    const mirroredLandmarks = landmarks.map(lm => ({ ...lm, x: 1 - lm.x }));
+                    // MAPEAMENTO PRECISO DE PONTOS:
+                    // Os landmarks do MediaPipe são normalizados [0, 1] relativos ao vídeo INTEIRO (videoW x videoH).
+                    // Precisamos recalcular esses pontos para que eles batam com a imagem RECORTADA e ESPELHADA no canvas.
+                    const mappedLandmarks = landmarks.map(lm => {
+                        // 1. Converte landmarks normalizados [0,1] para pixels reais no vídeo original
+                        const pixelX = lm.x * videoW;
+                        const pixelY = lm.y * videoH;
+
+                        // 2. Ajusta as coordenadas subtraindo o deslocamento do corte (sx, sy)
+                        // para que (0,0) seja o canto superior esquerdo da imagem recortada
+                        const croppedPixelX = pixelX - sx;
+                        const croppedPixelY = pixelY - sy;
+
+                        // 3. Normaliza novamente [0,1] relativos ao tamanho do canvas recortado
+                        const normalizedX = croppedPixelX / canvasW;
+                        const normalizedY = croppedPixelY / canvasH;
+
+                        // 4. Aplica o efeito espelho apenas no eixo X
+                        return {
+                            ...lm,
+                            x: 1.0 - normalizedX,
+                            y: normalizedY // Y permanece o mesmo
+                        };
+                    });
 
                     // Desenha o esqueleto digital com linhas finas e precisas
-                    drawConnectors(canvasCtx, mirroredLandmarks, HAND_CONNECTIONS, {color: '#ffffff', lineWidth: 2});
-                    drawLandmarks(canvasCtx, mirroredLandmarks, {color: '#00ffaa', lineWidth: 1, radius: 2});
+                    drawConnectors(canvasCtx, mappedLandmarks, HAND_CONNECTIONS, {color: '#ffffff', lineWidth: 2});
+                    drawLandmarks(canvasCtx, mappedLandmarks, {color: '#00ffaa', lineWidth: 1, radius: 2.5});
 
+                    // Aplica a movimentação em tempo real no modelo físico 3D
+                    // Usamos os landmarks originais ou re-espelhados para o Three.js
+                    // (updateSolid3DHand já lida com o espelho no eixo X internamente)
                     updateSolid3DHand(landmarks);
                 }
             }
@@ -240,12 +285,13 @@
 
         // --- ATUALIZAÇÃO E SUAVIZAÇÃO DA MÃO 3D ---
         function updateSolid3DHand(landmarks) {
-            const lerpFactor = 0.4; // Fator de suavização (quanto menor, mais suave; quanto maior, mais rápido)
+            const lerpFactor = 0.4; // Fator de suavização (quanto menor, mais suave)
 
             for (let i = 0; i < 21; i++) {
                 const lm = landmarks[i];
                 
                 // Posições calculadas com base nas coordenadas da IA
+                // Mantemos o sinal negativo no eixo X para espelhar o movimento no 3D
                 const targetX = -(lm.x - 0.5) * 10;
                 const targetY = -(lm.y - 0.5) * 10;
                 const targetZ = -lm.z * 12;
@@ -276,9 +322,9 @@
 
         hands.setOptions({
             maxNumHands: 1,
-            modelComplexity: 2,         // MÁXIMA PRECISÃO: Ativa o modelo mais pesado e detalhado da IA do Google
+            modelComplexity: 2,         // MÁXIMA PRECISÃO: Ativa o modelo mais detalhado
             minDetectionConfidence: 0.7, // Só aceita se tiver 70% de certeza que encontrou a mão
-            minTrackingConfidence: 0.7   // Evita que o esqueleto "solte" da sua mão ao mover
+            minTrackingConfidence: 0.7   // Evita que o esqueleto "solte" da sua mão
         });
 
         hands.onResults(onResults);
@@ -288,7 +334,7 @@
             onFrame: async () => {
                 await hands.send({image: videoElement});
             },
-            width: 1280,
+            width: 1280, // Solicita alta resolução
             height: 720
         });
         camera.start();
@@ -296,4 +342,3 @@
     </script>
 </body>
 </html>
-
